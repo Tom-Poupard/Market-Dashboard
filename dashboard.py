@@ -125,7 +125,7 @@ data.columns = readable_tickers
 data = preprocess(data)
 cum_returns = normalize(data)
 
-# Bouton pour actualiser les données manuellement depuis le dashboard
+# Button to manually update the data from the dashboard
 if st.button("Actualiser les données"):
     data = update_data(tickers, "data.csv")
     data.columns = readable_tickers
