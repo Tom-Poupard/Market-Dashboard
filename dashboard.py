@@ -1,138 +1,149 @@
 # ====================================================
-# Python Dashboard - Cross-Asset Market Monitor
-# ====================================================
-
-# ====================================================
 # 1. Imports
 # ====================================================
-import os
 import pandas as pd
 import yfinance as yf
-import matplotlib.pyplot as plt
 import streamlit as st
-from datetime import date, timedelta
+from datetime import date
+import plotly.express as px
 
 # ====================================================
-# 2. Functions
+# 2. Function Definitions
 # ====================================================
 
-# 2.1 Load or Update Data
-def update_data(tickers, file="data.csv"):
-    """
-    Charge les données depuis CSV si existant,
-    sinon télécharge depuis Yahoo Finance.
-    Met à jour uniquement les nouvelles données si nécessaires.
-    """
-    if os.path.exists(file):
-        data = pd.read_csv(file, index_col=0, parse_dates=True)
-        last_date = data.index.max().date()
-        today = pd.to_datetime("today").date()
-        if last_date < today:
-            new_data = yf.download(
-                tickers,
-                start=last_date + timedelta(days=1),
-                end=today,
-                auto_adjust=True,
-                progress=False
-            )["Close"]
-            if not new_data.empty:
-                data = pd.concat([data, new_data])
-                data.to_csv(file)
-                print(f"Données mises à jour jusqu'à {today}")
+def download_data(tickers, start_date=None, end_date=None):
+    all_data = []
+    valid_tickers = []
+    failed_tickers = []
+
+    for t in tickers:
+        try:
+            df = yf.download(t, start=start_date, end=end_date, progress=False)["Close"]
+            if not df.empty:
+                df.name = t
+                all_data.append(df)
+                valid_tickers.append(t)
             else:
-                print("Pas de nouvelles données disponibles")
-        else:
-            print("Les données sont déjà à jour")
+                failed_tickers.append(t)
+        except:
+            failed_tickers.append(t)
+
+    if all_data:
+        data = pd.concat(all_data, axis=1)
+        return data, valid_tickers, failed_tickers
     else:
-        data = yf.download(tickers, auto_adjust=True, progress=False)["Close"]
-        data.to_csv(file)
-        print("Données téléchargées depuis Yahoo Finance")
-    return data
+        return pd.DataFrame(), [], failed_tickers
 
-# 2.2 Preprocessing Data
 def preprocess(data):
-    data = data.ffill().dropna()
-    return data
+    return data.ffill().dropna(how="all")
 
-# 2.3 Normalizing Data
 def normalize(prices):
     returns = prices.pct_change().fillna(0)
     cum_returns = (1 + returns).cumprod()
     return cum_returns
 
-# 2.4 Plotting
 def plot(data, title):
-    fig = plt.figure(figsize=(10, 5))
-    for col in data.columns:
-        plt.plot(data[col], label=col)
-    plt.title(title)
-    plt.xticks(rotation=45)
-    plt.legend()
-    plt.tight_layout()
-    plt.grid()
+    df = data.reset_index().melt(id_vars="Date", var_name="Ticker", value_name="Price")
+    fig = px.line(
+        df,
+        x="Date",
+        y="Price",
+        color="Ticker",
+        title=title,
+        template="plotly_dark",
+        hover_data={"Price": ":.2f", "Date": True, "Ticker": True},
+    )
+    fig.update_layout(
+        plot_bgcolor="#0E1117",
+        paper_bgcolor="#0E1117",
+        font=dict(color="white"),
+        title=dict(x=0.5),
+        hoverlabel=dict(bgcolor="rgba(30,30,30,0.8)", font_size=12),
+        legend=dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5),
+    )
+    fig.update_traces(line=dict(width=1.2))
     return fig
 
-# 2.5 Streamlit Dashboard
-def create_dashboard(data, title=None):
-    st.set_page_config(page_title=title, layout="wide")
-    st.title(title)
+def create_dashboard(data, title):
+    if data.empty:
+        st.error("No valid data available to display.")
+        return
 
-    # Sidebar - Sélection des colonnes
-    cols = st.sidebar.multiselect(
-        "Select columns",
-        options=data.columns,
-        default=data.columns
-    )
-
-    # Sidebar - Sélection des dates
     min_date = data.index.min().date()
     max_date = data.index.max().date()
-    start, end = st.sidebar.date_input("Date range", [min_date, max_date])
-    if not isinstance(start, date):
-        start, end = start[0], start[1]
+
+    # Sidebar filter pour les tickers
+    cols = st.sidebar.multiselect(
+        "Select assets to display:",
+        options=data.columns.tolist(),
+        default=data.columns.tolist()
+    )
+
+    date_range = st.sidebar.date_input("Date range", [min_date, max_date])
+    if len(date_range) == 2:
+        start, end = date_range
+    else:
+        start, end = min_date, max_date
 
     mask = (data.index.date >= start) & (data.index.date <= end)
     data_filtered = data.loc[mask, cols]
 
-    # Affichage graphique
+    if data_filtered.empty:
+        st.warning("No data available for the selected range or assets.")
+        return
+
     fig = plot(normalize(data_filtered), title)
-    st.pyplot(fig)
+    st.title(title)
+    st.plotly_chart(fig, use_container_width=True)
 
 # ====================================================
 # 3. Main Workflow
 # ====================================================
 
-# Liste des tickers
-tickers = ["ES=F", "ZN=F", "GC=F", "CL=F", "DX=F", "ZW=F"]
-
-ticker_names = {
-    "ES=F": "S&P 500 Futures",
-    "ZN=F": "10-Year Treasury Note Futures",
-    "GC=F": "Gold Futures",
-    "CL=F": "Crude Oil Futures",
-    "DX=F": "US Dollar Index Futures",
-    "ZW=F": "Wheat Futures"
+# Mapping des classes d'actifs et leurs tickers
+asset_classes = {
+    "Cross Asset": ["SPY", "IEF", "GLD", "USO", "UUP", "WEAT"],
+    "Equity": ["SPY", "QQQ", "IWM"],
+    "Bonds": ["IEF", "TLT", "SHY"],
+    "Forex": ["UUP", "FXE", "FXY"],
+    "Rates": ["^IRX", "^TNX", "^TYX"]  # ex: 3M, 10Y, 30Y US Treasury yields
 }
 
-readable_tickers = [ticker_names[t] for t in tickers]
+asset_names = {
+    "SPY": "S&P 500 ETF",
+    "QQQ": "Nasdaq 100 ETF",
+    "IWM": "Russell 2000 ETF",
+    "IEF": "10-Year Treasury ETF",
+    "TLT": "20+ Year Treasury ETF",
+    "SHY": "1-3 Year Treasury ETF",
+    "GLD": "Gold ETF",
+    "USO": "Crude Oil ETF",
+    "UUP": "US Dollar Index ETF",
+    "WEAT": "Wheat ETF",
+    "FXE": "Euro ETF",
+    "FXY": "Yen ETF",
+    "^IRX": "3M Treasury Yield",
+    "^TNX": "10Y Treasury Yield",
+    "^TYX": "30Y Treasury Yield"
+}
 
-# Chargement ou mise à jour des données
 start_date = "1980-01-01"
 end_date = date.today().strftime("%Y-%m-%d")
 
-data = update_data(tickers, "data.csv")
-data.columns = readable_tickers
-data = preprocess(data)
-cum_returns = normalize(data)
+# --- Sidebar pour choisir la classe d'actifs ---
+st.sidebar.header("📊 Asset Class")
+selected_class = st.sidebar.radio(
+    "Choose asset class:",
+    list(asset_classes.keys())
+)
 
-# Button to manually update the data from the dashboard
-if st.button("Actualiser les données"):
-    data = update_data(tickers, "data.csv")
-    data.columns = readable_tickers
+# --- Télécharger et afficher les données pour la classe choisie ---
+tickers = asset_classes[selected_class]
+data, valid_tickers, failed_tickers = download_data(tickers, start_date, end_date)
+if data.empty:
+    st.error(f"No valid data for {selected_class}.")
+else:
+    data.columns = [asset_names.get(t, t) for t in valid_tickers]
     data = preprocess(data)
     cum_returns = normalize(data)
-    st.success("Données mises à jour !")
-
-# Création du dashboard
-title = "Cross-Asset Market Monitor"
-create_dashboard(cum_returns, title)
+    create_dashboard(cum_returns, f"📊 {selected_class} Dashboard")
